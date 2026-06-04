@@ -1,0 +1,24 @@
+{
+  "date": "2026-06-04",
+  "region": "us-east-1",
+  "provider": "aws",
+  "memory_size": 128,
+  "cluster_size": 1,
+  "vcpus": 16,
+  "instance_storage": "950 GB local NVMe SSD (Graviton4)",
+  "sources": [
+    "https://aws.amazon.com/ec2/pricing/on-demand/",
+    "https://instances.vantage.sh/aws/ec2/r8gd.4xlarge"
+  ],
+  "tier": [
+    {
+      "name": "r8gd.4xlarge",
+      "compute": 1.17568,
+      "compute_price_unit": 128,
+      "storage": 0.023,
+      "storage_price_unit": 1073741824,
+      "storage_model": "object",
+      "storage_notes": "Durable copy of the source data in Amazon S3 Standard (us-east-1 list price, $0.023/GiB-month). The query-ready DuckDB file runs on the instance's included local NVMe SSD, which carries no separate storage charge. compute_price_unit is set to memory_size so the memory ratio is 1.0 and `compute` is the instance's on-demand $/hour."
+    }
+  ]
+}

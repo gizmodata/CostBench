@@ -1,0 +1,7 @@
+# Runtime artifacts produced by the harness — never commit these.
+*.db
+*.db.wal
+*.wal
+hits*.parquet
+gizmosql_server.log
+log.txt
