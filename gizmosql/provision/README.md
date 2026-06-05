@@ -5,7 +5,9 @@ striped into one large volume (the DuckDB file, the downloaded parquet, and
 DuckDB's spill/temp dir all live there — never the small root EBS volume).
 
 Neither ClickBench nor CostBench ships a provisioning/RAID script, so this dir
-provides a self-contained one: **[`mount_nvme.sh`](mount_nvme.sh)**.
+provides self-contained ones: **[`provision.sh`](provision.sh)** (launch the
+instance) + **[`mount_nvme.sh`](mount_nvme.sh)** (RAID-0 the NVMe, wired in as
+user-data) + **[`teardown.sh`](teardown.sh)**.
 
 ## `mount_nvme.sh`
 
@@ -28,38 +30,31 @@ sudo bash mount_nvme.sh [MOUNT_POINT] [OWNER]   # defaults: /mnt/nvme  ubuntu
 
 ## Launch → mount → run → teardown
 
-The instance must be **Ubuntu** (the script is `apt`-based) with local NVMe
-(`i8ge.24xlarge` for all three scales). Example with the AWS CLI, using
-`mount_nvme.sh` as user-data so the RAID is built at boot:
+`provision.sh` launches an Ubuntu `i8ge.24xlarge` (us-east-1 by default, to match
+the pricing files) and wires `mount_nvme.sh` in as **user-data**, so the NVMe
+RAID-0 is built at boot. Config lives in `.env` (gitignored) — copy `.env.example`
+and fill in AWS creds (or `AWS_PROFILE`) and your `KEY_NAME`:
 
 ```bash
-# Latest Ubuntu 24.04 amd64 AMI in the region (must match the pricing file's region)
-AMI=$(aws ssm get-parameter --region us-east-1 \
-  --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
-  --query Parameter.Value --output text)
-
-aws ec2 run-instances --region us-east-1 \
-  --instance-type i8ge.24xlarge \
-  --image-id "$AMI" \
-  --key-name <your-key> \
-  --security-group-ids <sg-with-ssh> \
-  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":100,"VolumeType":"gp3"}}]' \
-  --user-data file://mount_nvme.sh \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=gizmosql-costbench}]'
+cp .env.example .env && "$EDITOR" .env    # set AWS creds + KEY_NAME
+./provision.sh                            # launches; prints the public DNS + next steps
 ```
 
-Then SSH in and run the sweep:
+If you don't pass `SECURITY_GROUP_IDS`, it finds-or-creates an SSH-only security
+group from your current IP. Then SSH in, point `DATA_DIR` at the mount, and run
+the sweep:
 
 ```bash
 ssh ubuntu@<public-dns>
-  # (clone or scp the CostBench fork's gizmosql/ dir up first)
+  df -h /mnt/nvme && cat /proc/mdstat       # confirm the ~60 TB RAID-0 mounted
+  # clone or scp the CostBench fork's gizmosql/ dir up first
   cd gizmosql
-  export DATA_DIR=/mnt/nvme        # the RAID mount from mount_nvme.sh
-  nohup ./run_all.sh > run_all.log 2>&1 &   # ~hours at 100B; survives disconnect
-  tail -f run_all.log
+  export DATA_DIR=/mnt/nvme
+  MACHINE=i8ge.24xlarge MEMORY_GIB=768 INSTALL=1 nohup ./run_all.sh > run_all.log 2>&1 &
+  tail -f run_all.log                       # ~hours at 100B; survives disconnect
 
-# When done:
-aws ec2 terminate-instances --region us-east-1 --instance-ids <id>
+# When done (terminates by Name tag, or pass an instance id):
+./teardown.sh
 ```
 
 ### Using GizmoData's internal launcher instead

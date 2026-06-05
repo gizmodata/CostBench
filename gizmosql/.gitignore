@@ -5,3 +5,4 @@
 hits*.parquet
 gizmosql_server.log
 log.txt
+.env
