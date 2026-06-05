@@ -29,7 +29,7 @@ runtime can land at the top of a cost-performance ranking.
 | CostBench concept            | GizmoSQL realization |
 |------------------------------|----------------------|
 | Workload                     | The same **43 ClickBench queries** (`clickbench/large/queries.sql`), DuckDB dialect. |
-| Scales                       | **1B / 10B / (100B, TBD)** rows, inflated from the base ~100M-row `hits` dataset. |
+| Scales                       | **1B / 10B / 100B** rows, inflated from the base ~100M-row `hits` dataset. |
 | Native storage format        | A DuckDB database file on the instance's local **NVMe** SSD. |
 | No tuning                    | Out-of-the-box DuckDB; no indexes, materialized views, or hand-tuning. |
 | Hot runtime, caches disabled | Best of 3 runs; the server is restarted and the OS page cache is dropped before **each** query. |
@@ -71,58 +71,74 @@ durable system-of-record is the S3 copy, reloaded on launch.)
 
 ## What to expect (break-even analysis)
 
-GizmoSQL's 1B/10B numbers are pending real runs (see [Reproduce](#reproduce)). But we can already
-bound the result from CostBench's **own published scores** plus real EC2 prices. The lowest (best)
-cloud `runtime × cost` score at each scale is ClickHouse Cloud Enterprise:
+The 1B/10B/100B numbers are pending real runs (see [Reproduce](#reproduce)). But we can already
+bound the result from CostBench's **own published scores** plus real EC2 prices. All three scales run
+on one **`i8ge.24xlarge`** (96-core Graviton4, single NUMA node, 60 TB local NVMe, $11.39/hr →
+**$0.003164/s**). The lowest (best) cloud `runtime × cost` score at each scale is ClickHouse Cloud
+Enterprise — the bar GizmoSQL has to clear:
 
-| Scale | Best cloud score (`rt × cost`) | GizmoSQL must finish 43 queries in **under** … to win |
-|------:|-------------------------------:|-------------------------------------------------------|
-| 1B    | 15.46 (ClickHouse 9×236 GiB)   | **302 s** on `c6a.4xlarge` · **218 s** on `r8gd.4xlarge` · **63 s** on `r8gd.metal-48xl` |
-| 10B   | 284.6 (ClickHouse 20×236 GiB)  | **539 s** on `r8gd.12xlarge` · **269 s** on `r8gd.metal-48xl` |
-| 100B  | 4852 (ClickHouse 20×236 GiB)   | **1113 s** on `r8gd.metal-48xl` |
+| Scale | Best cloud score (`rt × cost`) | GizmoSQL on `i8ge.24xlarge` must finish 43 queries in **under** … |
+|------:|-------------------------------:|-------------------------------------------------------------------|
+| 1B    | 15.46 (ClickHouse 9×236 GiB)   | **70 s**   |
+| 10B   | 284.6 (ClickHouse 20×236 GiB)  | **300 s**  |
+| 100B  | 4852 (ClickHouse 20×236 GiB)   | **1238 s** (~20.6 min) |
 
-The threshold is `sqrt(best_cloud_score / per_second_rate)`. For context, GizmoSQL already runs the
-full 43-query suite in **3.18 s on `c8g.metal-48xl`** and **23.8 s on `c6a.4xlarge`** at the base
-~100M-row scale on the [ClickBench leaderboard](https://benchmark.clickhouse.com). (Those leaderboard
-anchors are warm-cache *hot* runs; this harness drops the OS page cache before each query, so treat
-them as indicative scale references, not apples-to-apples timings.) Metal-class GizmoSQL clearing
-~63 s at 1B (≈10× the data) is a comfortable margin; **10B is the genuinely interesting run**,
-landing near the break-even line — which is exactly why we run it.
+The threshold is `sqrt(best_cloud_score / per_second_rate)`. For context, GizmoSQL runs the full
+43-query suite in **3.18 s on `c8g.metal-48xl`** (192-core) and **23.8 s on `c6a.4xlarge`** at the
+base ~100M-row scale on the [ClickBench leaderboard](https://benchmark.clickhouse.com). (Those are
+warm-cache *hot* leaderboard runs; this harness drops the OS page cache before each query, so treat
+them as indicative scale references, not apples-to-apples.) So:
 
-GizmoSQL's per-second compute rate vs the cloud vendors' *effective* rate at 1B (their published
-`cost_hot / rt_hot`):
+- **1B** has the tightest bar (70 s) — a small dataset on a box sized for 100B — but 96 single-socket
+  cores should clear it comfortably. A cheaper instance (`r8gd.4xlarge`, $0.000327/s) would give 1B
+  far more headroom if you later split it off.
+- **10B is the genuinely interesting run**, landing near the 300 s break-even line.
+- **100B** is the hardest: 27 TB out-of-core on 768 GiB RAM, ~20 min to beat the cloud — runnable on
+  this box (60 TB NVMe), but the least certain to win cost-performance.
+
+GizmoSQL's per-second rate on `i8ge.24xlarge` ($0.003164/s) vs the cloud vendors' *effective* rate
+at 1B (their published `cost_hot / rt_hot`):
 
 | System | Config | Effective $/s |
 |--------|--------|--------------:|
-| **GizmoSQL** | `c6a.4xlarge` | **$0.000170** |
-| **GizmoSQL** | `r8gd.4xlarge` | **$0.000327** |
-| **GizmoSQL** | `r8gd.metal-48xl` | **$0.003919** |
+| **GizmoSQL** | `i8ge.24xlarge` | **$0.003164** |
 | Snowflake | Enterprise X-Small | $0.000833 |
 | Databricks | Large | $0.007778 |
 | Redshift | Serverless 128 RPU | $0.013297 |
 | BigQuery | Enterprise 2000 slots | $0.021043 |
 | ClickHouse | Enterprise 9×236 GiB | $0.028785 |
 
-The cheap cloud tiers (Snowflake X-Small, Databricks 2X-Small) bill at a per-second rate close to
-GizmoSQL's **but post 700–17,600 s on the suite**; the fast cloud tiers run in tens of seconds but
-bill **24–88× more per second than GizmoSQL on `r8gd.4xlarge`** (and still 2–7× more than the
-`r8gd.metal-48xl` flagship). GizmoSQL aims for the empty quadrant: a rock-bottom rate **and**
-metal-class speed.
+The *fast* cloud tiers bill **2.5–9× more per second** than GizmoSQL on `i8ge.24xlarge`; the *cheap*
+tiers (Snowflake X-Small, Databricks 2X-Small, ~$0.0008/s) undercut it on rate but post
+**700–17,600 s** on the suite — 1–2 orders of magnitude slower. GizmoSQL aims for the empty quadrant:
+a competitive rate **and** fast single-node speed. (Smaller single-socket instances push the rate
+~10× lower again — e.g. `r8gd.4xlarge` at $0.000327/s — the cost-performance play for the smaller
+scales if you split them off this box.)
 
 ## Instances
 
-All runs use NVMe-equipped AWS Graviton4 instances (the family GizmoSQL used for its
-[1-trillion-row run](https://github.com/coiled/1trc/issues/7) — `r8gd.metal-48xl`, 11.4 TB RAID-0
-NVMe, 1T rows in 129 s for **$0.51 on-demand / $0.10 spot**):
+All three scales run on a single **`i8ge.24xlarge`** — AWS's storage-dense Graviton4 instance:
 
-| Instance | vCPU | RAM | Local NVMe | On-demand $/hr | Suited to |
-|----------|-----:|----:|-----------:|---------------:|-----------|
-| `r8gd.4xlarge`     | 16  | 128 GiB  | 950 GB  | $1.17568 | 1B (~270 GB DB) |
-| `r8gd.12xlarge`    | 48  | 384 GiB  | 2.85 TB | $3.527   | 10B (~2.7 TB DB) |
-| `r8gd.metal-48xl`  | 192 | 1536 GiB | 11.4 TB | $14.108  | 10B / 100B |
+| Instance | vCPU | RAM | NUMA | Local NVMe | On-demand $/hr | Used for |
+|----------|-----:|----:|:----:|-----------:|---------------:|----------|
+| `i8ge.24xlarge` | 96 | 768 GiB | **1 socket / 1 node** | **60 TB** (8 × 7.5 TB) | $11.39 | 1B / 10B / 100B |
 
-> **100B caveat.** At 100B rows the DuckDB file is ≈27 TB, larger than one instance's NVMe, so 100B
-> needs striped EBS, multiple disks, or a larger box — and is deferred until 1B/10B are in.
+Why this one box:
+
+- **Storage.** 60 TB of local NVMe holds even the 100B DuckDB file (≈27 TB) with ~2× headroom for
+  query spill — so 100B runs on a single node, no striped EBS or larger box needed.
+- **Single NUMA node.** 96 cores = one Graviton4 socket. DuckDB isn't NUMA-pinning-aware, so the
+  2-socket sizes (`.48xlarge` / `.metal-48xl`, 192 vCPU = 2 NUMA nodes) pay a cross-socket bandwidth
+  penalty on these scan-heavy queries and scale sub-linearly. The single-socket `.24xlarge` avoids
+  that — and at half the price its cost-performance break-even is √2 wider, so the bigger box would
+  have to be >1.41× faster just to break even (which DuckDB rarely delivers across sockets).
+- **Lineage.** Same Graviton4 + local-NVMe lineage as the `r8gd.metal-48xl` GizmoSQL used for its
+  [1-trillion-row run](https://github.com/coiled/1trc/issues/7) (1T rows in 129 s on NVMe).
+
+> **Per-scale optimization (optional).** Running everything on one 100B-sized box is simplest, but a
+> cheaper single-socket instance gives the smaller scales more cost-performance headroom — e.g.
+> `r8gd.4xlarge` ($1.18/hr) for 1B or `r8gd.24xlarge` ($7.05/hr) for 10B. Pricing files for those are
+> included (`pricings/aws.*.json`) if you want to split scales across instances.
 
 ## Layout
 
@@ -147,30 +163,47 @@ gizmosql/
 
 ## Reproduce
 
-On a fresh Ubuntu EC2 instance (`INSTALL=1` installs deps + GizmoSQL via the one-line installer):
+On a fresh Ubuntu `i8ge.24xlarge`, mount/stripe the local NVMe and point **`DATA_DIR`** at it — the
+DuckDB file, the downloaded parquet, **and** DuckDB's spill/temp dir all live there, so nothing large
+ever touches the small root EBS volume (essential at 10B/100B). `INSTALL=1` installs deps + GizmoSQL
+via the one-line installer.
 
 ```bash
 cd gizmosql/clickbench/large
+export DATA_DIR=/mnt/nvme          # absolute path to your NVMe mount
+# export MEMORY_LIMIT=90%          # optional; default is DuckDB's ~80% of RAM
 
-# Example: 1B rows on r8gd.4xlarge
-MACHINE=r8gd.4xlarge MEMORY_GIB=128 SCALE=1B TARGET_ROWS=1000000000 INSTALL=1 ./benchmark.sh
-#   → writes results_1B/r8gd.4xlarge.json   (raw per-query runtimes)
-
-# Example: 10B rows on r8gd.metal-48xl
-MACHINE=r8gd.metal-48xl MEMORY_GIB=1536 SCALE=10B TARGET_ROWS=10000000000 ./benchmark.sh
+MACHINE=i8ge.24xlarge MEMORY_GIB=768 SCALE=1B   TARGET_ROWS=1000000000   INSTALL=1 ./benchmark.sh
+MACHINE=i8ge.24xlarge MEMORY_GIB=768 SCALE=10B  TARGET_ROWS=10000000000           ./benchmark.sh
+MACHINE=i8ge.24xlarge MEMORY_GIB=768 SCALE=100B TARGET_ROWS=100000000000          ./benchmark.sh
+#   → each writes results_<SCALE>/i8ge.24xlarge.json (raw per-query runtimes)
 ```
 
-Then enrich with the matching pricing file and reduce to a scoring record:
+`DATA_DIR` defaults to `.`; `DUCKDB_TEMP_DIR` defaults to `$DATA_DIR/duckdb_tmp` (override if your
+spill disk differs). The DuckDB temp dir is set via a `SET temp_directory` startup command and the
+memory cap via `gizmosql_server --memory-limit`. Rough wall-clock to **build** each dataset (DuckDB
+self-insert ≈ 5–15M rows/s; `load_time` is CostBench's write-side metric and does **not** affect the
+read-side score):
+
+| Scale | Data generation | DB size on NVMe |
+|------:|-----------------|-----------------|
+| 1B    | ~4–5 min   | ~270 GB |
+| 10B   | ~15–30 min | ~2.7 TB |
+| 100B  | ~3–6 hours | ~27 TB |
+
+Then enrich each with the `i8ge.24xlarge` pricing file and reduce to a scoring record:
 
 ```bash
 cd gizmosql
-./enrich.sh   clickbench/large/results_1B/r8gd.4xlarge.json \
-              pricings/aws.r8gd.4xlarge.json \
-              results_1B/r8gd.4xlarge.json
-./aggregate.sh results_1B/r8gd.4xlarge.json >> results_1B/scoring.ndjson
+for S in 1B 10B 100B; do
+  ./enrich.sh    clickbench/large/results_${S}/i8ge.24xlarge.json \
+                 pricings/aws.i8ge.24xlarge.json \
+                 results_${S}/i8ge.24xlarge.json
+  ./aggregate.sh results_${S}/i8ge.24xlarge.json >> results_${S}/scoring.ndjson
+done
 
 # Chart it with CostBench's own visualizers:
-python ../_viz2/perf_per_dollar.py --no-title -o ppd_1B.png < results_1B/scoring.ndjson
+python ../_viz2/perf_per_dollar.py --no-title -o ppd_1B.png     < results_1B/scoring.ndjson
 python ../_viz2/render.py          --no-title -o scatter_1B.png < results_1B/scoring.ndjson
 ```
 
@@ -180,9 +213,9 @@ The scripts are bash-3.2 compatible, so the harness also runs on macOS for devel
 
 | Scale | Instance | rt_hot (s) | cost_hot ($) | storage ($/mo) | perf/$ vs best cloud |
 |------:|----------|-----------:|-------------:|---------------:|----------------------|
-| 1B    | _r8gd.4xlarge_     | _pending_ | _pending_ | _pending_ | _pending_ |
-| 1B    | _r8gd.metal-48xl_  | _pending_ | _pending_ | _pending_ | _pending_ |
-| 10B   | _r8gd.metal-48xl_  | _pending_ | _pending_ | _pending_ | _pending_ |
+| 1B    | _i8ge.24xlarge_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 10B   | _i8ge.24xlarge_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 100B  | _i8ge.24xlarge_ | _pending_ | _pending_ | _pending_ | _pending_ |
 
 _(Filled in as the runs complete.)_
 

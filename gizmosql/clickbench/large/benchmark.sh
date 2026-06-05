@@ -2,12 +2,17 @@
 # End-to-end GizmoSQL CostBench run at a single scale on a single machine.
 #
 # Required env:
-#   MACHINE       instance label, e.g. c6a.4xlarge / r8gd.metal-48xl
+#   MACHINE       instance label, e.g. i8ge.24xlarge
 #   MEMORY_GIB    instance RAM in GiB (must match the pricing file's memory_size)
 #   SCALE         1B | 10B | 100B   (output dir + db filename)
 #   TARGET_ROWS   row target, e.g. 1000000000
 #
 # Optional env:
+#   DATA_DIR      ABSOLUTE path to the NVMe mount; the DuckDB file, the downloaded
+#                 parquet, and DuckDB's spill/temp dir all live here (default ".").
+#                 SET THIS on EC2 so nothing large hits the small root volume.
+#   MEMORY_LIMIT  DuckDB memory limit, e.g. "700GB" / "90%" (default ~80% of RAM)
+#   DUCKDB_TEMP_DIR  override the spill dir (default ${DATA_DIR}/duckdb_tmp)
 #   INSTALL=1     apt deps + install GizmoSQL via the one-line installer first
 #   HITS_PARQUET / HITS_URL   base data source (see load_once_from_url.sh)
 #   DROP_CACHES=1 drop the Linux page cache before each query (default on)
@@ -22,7 +27,10 @@ MEMORY_GIB="${MEMORY_GIB:?set MEMORY_GIB (instance RAM in GiB)}"
 SCALE="${SCALE:?set SCALE (1B|10B|100B)}"
 TARGET_ROWS="${TARGET_ROWS:?set TARGET_ROWS (e.g. 1000000000)}"
 
-export DB_FILE="${DB_FILE:-clickbench_${SCALE}.db}"
+export DATA_DIR="${DATA_DIR:-.}"
+export DB_FILE="${DB_FILE:-${DATA_DIR}/clickbench_${SCALE}.db}"
+export HITS_PARQUET="${HITS_PARQUET:-${DATA_DIR}/hits.parquet}"
+mkdir -p "$DATA_DIR"
 . ./util.sh
 
 if [ "${INSTALL:-0}" = "1" ]; then
@@ -55,7 +63,6 @@ DATA_SIZE="$(wc -c < "$DB_FILE" | tr -d '[:space:]')"
 # Durable storage footprint: a copy of the source data kept in S3, sized as the
 # source parquet scaled to the final row count. This is what storage is billed
 # on under the "NVMe runtime + S3 durable" model.
-HITS_PARQUET="${HITS_PARQUET:-hits.parquet}"
 PARQUET_BYTES=0
 [ -f "$HITS_PARQUET" ] && PARQUET_BYTES="$(wc -c < "$HITS_PARQUET" | tr -d '[:space:]')"
 DURABLE_SIZE="$(awk -v p="$PARQUET_BYTES" -v b="$BASE_ROWS" -v f="$ROWS" \

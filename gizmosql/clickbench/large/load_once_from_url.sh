@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-HITS_PARQUET="${HITS_PARQUET:-hits.parquet}"
+HITS_PARQUET="${HITS_PARQUET:-${DATA_DIR:-.}/hits.parquet}"
 HITS_URL="${HITS_URL:-https://datasets.clickhouse.com/hits_compatible/athena/hits.parquet}"
 
 if [[ "$HITS_PARQUET" != http* && ! -f "$HITS_PARQUET" ]]; then
