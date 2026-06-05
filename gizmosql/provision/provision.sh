@@ -59,11 +59,24 @@ else
   fi
 fi
 
-# Resolve the AMI (latest Ubuntu 24.04 amd64) unless one was supplied.
-AMI="${AMI:-$(aws ssm get-parameter --region "$REGION" \
-  --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
-  --query Parameter.Value --output text)}"
-echo "AMI: ${AMI}"
+# Resolve the AMI unless one was supplied: detect the instance type's CPU
+# architecture (arm64 for Graviton like i8ge, else x86_64) and pick the matching
+# latest Ubuntu 24.04 image, so the AMI arch always matches the instance.
+if [ -z "${AMI:-}" ]; then
+  ARCH="$(aws ec2 describe-instance-types --region "$REGION" --instance-types "$INSTANCE_TYPE" \
+          --query 'InstanceTypes[0].ProcessorInfo.SupportedArchitectures[0]' --output text)"
+  case "$ARCH" in
+    arm64)  AMI_ARCH=arm64 ;;
+    x86_64) AMI_ARCH=amd64 ;;
+    *) echo "ERROR: could not determine architecture for ${INSTANCE_TYPE} (got '${ARCH}')." >&2; exit 1 ;;
+  esac
+  AMI="$(aws ssm get-parameter --region "$REGION" \
+    --name "/aws/service/canonical/ubuntu/server/24.04/stable/current/${AMI_ARCH}/hvm/ebs-gp3/ami-id" \
+    --query Parameter.Value --output text)"
+  echo "Architecture: ${ARCH} (Ubuntu ${AMI_ARCH})   AMI: ${AMI}"
+else
+  echo "AMI: ${AMI} (provided)"
+fi
 
 # Security group: use the one provided, else find-or-create one that allows SSH
 # from your current public IP in the default VPC.
