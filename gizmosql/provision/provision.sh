@@ -26,14 +26,38 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "${SCRIPT_DIR}/.env" ] && . "${SCRIPT_DIR}/.env"
 
 command -v aws >/dev/null 2>&1 || { echo "ERROR: aws CLI not found." >&2; exit 1; }
-KEY_NAME="${KEY_NAME:?set KEY_NAME (existing EC2 key pair) in .env or the environment}"
+KEY_NAME="${KEY_NAME:-}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-i8ge.24xlarge}"
 REGION="${REGION:-${AWS_REGION:-us-east-1}}"
 ROOT_GB="${ROOT_GB:-100}"
 NAME="${NAME:-gizmosql-costbench}"
 
-echo "Region: ${REGION}   Instance: ${INSTANCE_TYPE}   Key: ${KEY_NAME}"
+echo "Region: ${REGION}   Instance: ${INSTANCE_TYPE}"
 [ "$REGION" = "us-east-1" ] || echo "NOTE: pricing files here are us-east-1; verify ${INSTANCE_TYPE} pricing for ${REGION} (or update pricings/aws.${INSTANCE_TYPE}.json)." >&2
+
+# SSH key pair: use KEY_NAME if passed, otherwise create one and save the .pem
+# locally (gitignored). AWS returns the private key only at creation time, so if
+# the named key already exists in AWS but we have no local .pem, we recreate it.
+PEM=""
+if [ -n "$KEY_NAME" ]; then
+  echo "Key pair: ${KEY_NAME} (existing)"
+else
+  KEY_NAME="gizmosql-costbench-key"
+  PEM="${SCRIPT_DIR}/${KEY_NAME}.pem"
+  key_exists="$(aws ec2 describe-key-pairs --region "$REGION" --key-names "$KEY_NAME" \
+                --query 'KeyPairs[0].KeyName' --output text 2>/dev/null || echo None)"
+  if [ "$key_exists" = "$KEY_NAME" ] && [ -f "$PEM" ]; then
+    echo "Key pair: ${KEY_NAME} (reusing ${PEM})"
+  else
+    if [ "$key_exists" = "$KEY_NAME" ]; then
+      aws ec2 delete-key-pair --region "$REGION" --key-name "$KEY_NAME" >/dev/null 2>&1 || true
+    fi
+    ( umask 177; aws ec2 create-key-pair --region "$REGION" --key-name "$KEY_NAME" \
+        --query KeyMaterial --output text > "$PEM" )
+    chmod 400 "$PEM"
+    echo "Key pair: ${KEY_NAME} (created; private key saved to ${PEM})"
+  fi
+fi
 
 # Resolve the AMI (latest Ubuntu 24.04 amd64) unless one was supplied.
 AMI="${AMI:-$(aws ssm get-parameter --region "$REGION" \
@@ -87,6 +111,9 @@ aws ec2 wait instance-running --region "$REGION" --instance-ids "$IID"
 DNS="$(aws ec2 describe-instances --region "$REGION" --instance-ids "$IID" \
        --query 'Reservations[0].Instances[0].PublicDnsName' --output text)"
 
+if [ -n "$PEM" ]; then SSH_CMD="ssh -i ${PEM} ubuntu@${DNS}"
+else SSH_CMD="ssh -i <your-key>.pem ubuntu@${DNS}"; fi
+
 cat <<EOF
 
   Instance:    ${IID}   (${INSTANCE_TYPE}, ${REGION})
@@ -95,7 +122,7 @@ cat <<EOF
   user-data (mount_nvme.sh) is building the NVMe RAID-0 at /mnt/nvme now.
   Give it ~1-2 min, then:
 
-    ssh ubuntu@${DNS}
+    ${SSH_CMD}
       df -h /mnt/nvme && cat /proc/mdstat          # confirm the ~60 TB RAID-0 mounted
       # clone/scp the CostBench fork's gizmosql/ dir up, then:
       cd gizmosql

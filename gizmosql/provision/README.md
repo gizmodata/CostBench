@@ -33,16 +33,19 @@ sudo bash mount_nvme.sh [MOUNT_POINT] [OWNER]   # defaults: /mnt/nvme  ubuntu
 `provision.sh` launches an Ubuntu `i8ge.24xlarge` (us-east-1 by default, to match
 the pricing files) and wires `mount_nvme.sh` in as **user-data**, so the NVMe
 RAID-0 is built at boot. Config lives in `.env` (gitignored) — copy `.env.example`
-and fill in AWS creds (or `AWS_PROFILE`) and your `KEY_NAME`:
+and fill in AWS creds (or `AWS_PROFILE`):
 
 ```bash
-cp .env.example .env && "$EDITOR" .env    # set AWS creds + KEY_NAME
+cp .env.example .env && "$EDITOR" .env    # set AWS creds
 ./provision.sh                            # launches; prints the public DNS + next steps
 ```
 
-If you don't pass `SECURITY_GROUP_IDS`, it finds-or-creates an SSH-only security
-group from your current IP. Then SSH in, point `DATA_DIR` at the mount, and run
-the sweep:
+If `KEY_NAME` is unset, `provision.sh` **creates an SSH key pair**
+(`gizmosql-costbench-key`) and saves the private key to
+`provision/gizmosql-costbench-key.pem` (gitignored, `chmod 400`) — reused on later
+runs, and the printed `ssh -i …` command points at it. If you don't pass
+`SECURITY_GROUP_IDS`, it also finds-or-creates an SSH-only security group from your
+current IP. Then SSH in, point `DATA_DIR` at the mount, and run the sweep:
 
 ```bash
 ssh ubuntu@<public-dns>

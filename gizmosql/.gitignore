@@ -5,4 +5,7 @@
 hits*.parquet
 gizmosql_server.log
 log.txt
+run_all*.log
+# Secrets / local config — never commit these.
 .env
+*.pem
