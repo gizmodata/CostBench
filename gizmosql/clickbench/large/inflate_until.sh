@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Inflate the hits table to TARGET rows by repeatedly doubling it
-# (INSERT INTO hits SELECT * FROM hits), then a final rowid-filtered top-off to
-# land exactly on TARGET. Mirrors CostBench's clickhouse-cloud/inflate_until.sh,
-# translated to DuckDB / GizmoSQL. Prints per-step elapsed time and rows/sec.
+# Inflate the hits table to TARGET rows by appending copies of its own rows in
+# bounded chunks (INSERT INTO hits SELECT * FROM hits WHERE rowid < add) until it
+# reaches TARGET. Prints per-step elapsed time and rows/sec.
 #
-# DuckDB MVCC means the SELECT sees the pre-insert snapshot, so each statement
-# cleanly doubles the table (it does not read its own freshly-inserted rows).
+# Why bounded chunks, not doubling the whole table at once: a single giant
+# `INSERT INTO hits SELECT * FROM hits` at multi-billion-row scale buffers the new
+# data up to DuckDB's memory_limit (~80% of RAM) and then flushes single-threaded
+# — one core pegged for a very long time. Capping each insert at CHUNK_ROWS keeps
+# every transaction small enough to stay fully parallel and checkpoint quickly
+# (same total rows written, just not in one transaction). rowid is used (not
+# LIMIT, a single-threaded streaming operator in DuckDB) so the scan parallelizes;
+# the table is append-only so rowids are contiguous 0..current-1 and, with
+# add <= current, `rowid < add` adds exactly `add` rows.
 #
 # Assumes a server is already running and hits already holds the base data.
 #
-# Usage: ./inflate_until.sh [TARGET_ROWS]   (default: env TARGET_ROWS or 1e9)
+# Usage:  ./inflate_until.sh [TARGET_ROWS]    (default: env TARGET_ROWS or 1e9)
+# Env:    CHUNK_ROWS  max rows per insert (default 250000000)
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./util.sh
@@ -31,6 +38,8 @@ fi
 # preserve_insertion_order=false lets DuckDB run the INSERT...SELECT fully in
 # parallel (row order in the inflated table is irrelevant to the benchmark).
 SET_PAR="SET preserve_insertion_order=false;"
+CHUNK="${CHUNK_ROWS:-250000000}"   # max rows per insert (bounded transaction)
+(( CHUNK > 0 )) || { echo "ERROR: CHUNK_ROWS must be > 0" >&2; exit 1; }
 
 # Format a duration (seconds) as 45s / 3m12s / 1h04m.
 fmt_dur() {
@@ -42,30 +51,21 @@ fmt_dur() {
 }
 START_TS=$(date +%s)
 
-# Doubling phase: stop before we would overshoot TARGET.
-while (( current * 2 <= TARGET )); do
-  echo "Doubling: ${current} -> $((current * 2))  (target ${TARGET})" >&2
+# Append in bounded chunks until TARGET. add = min(CHUNK, remaining, current):
+#   - capping at `current` keeps `rowid < add` exact,
+#   - capping at CHUNK keeps each transaction parallel and off the memory_limit,
+#   - capping at the remainder lands exactly on TARGET.
+# (Arithmetic uses ?: ternaries, not `(( )) && ...`, so it is set -e safe.)
+while (( current < TARGET )); do
+  add=$(( TARGET - current ))
+  add=$(( add > CHUNK ? CHUNK : add ))
+  add=$(( add > current ? current : add ))
+  echo "Append: +${add} -> $((current + add))  (target ${TARGET})" >&2
   prev=$current; t0=$(date +%s)
-  gizmosql_client --quiet --bail --command "${SET_PAR} INSERT INTO hits SELECT * FROM hits;"
+  gizmosql_client --quiet --bail --command "${SET_PAR} INSERT INTO hits SELECT * FROM hits WHERE rowid < ${add};"
   current="$(hits_rows)"
   dt=$(( $(date +%s) - t0 )); dt=$(( dt < 1 ? 1 : dt ))
   echo "  +$((current - prev)) rows in $(fmt_dur "$dt") ($(( (current - prev) / dt )) rows/s) -> ${current}" >&2
 done
-
-# Final top-off to land exactly on TARGET. Use a parallel `rowid < N` predicate
-# rather than `LIMIT N`: LIMIT is a single-threaded streaming operator in DuckDB
-# (one core, very slow at this scale), whereas a rowid filter parallelizes the
-# scan + insert across all cores. The table is append-only (we never delete), so
-# rowids are contiguous 0..current-1, and remaining < current after the doubling
-# loop — so `rowid < remaining` selects exactly `remaining` rows.
-if (( current < TARGET )); then
-  remaining=$(( TARGET - current ))
-  echo "Top-off: +${remaining} -> ${TARGET}" >&2
-  prev=$current; t0=$(date +%s)
-  gizmosql_client --quiet --bail --command "${SET_PAR} INSERT INTO hits SELECT * FROM hits WHERE rowid < ${remaining};"
-  current="$(hits_rows)"
-  dt=$(( $(date +%s) - t0 )); dt=$(( dt < 1 ? 1 : dt ))
-  echo "  +$((current - prev)) rows in $(fmt_dur "$dt") ($(( (current - prev) / dt )) rows/s) -> ${current}" >&2
-fi
 
 echo "Final rows: ${current}  (inflated in $(fmt_dur $(( $(date +%s) - START_TS ))))" >&2
