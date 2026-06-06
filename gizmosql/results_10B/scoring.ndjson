@@ -1,0 +1,1 @@
+{"id":"GizmoSQL-i8ge.24xlarge-i8ge.24xlarge","system":"GizmoSQL","tier":"i8ge.24xlarge","compute_model":null,"bar_label":"GizmoSQL (i8ge.24xlarge)","provider":"aws","region":"us-east-1","machine":"i8ge.24xlarge","cluster":"1","data_sz":"1376.53 GiB","cost_data":31.660121600666084,"rt_hot":597.317,"cost_hot":1.8898446194444447,"nq":"43"}
