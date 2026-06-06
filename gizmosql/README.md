@@ -3,6 +3,10 @@
 A [CostBench](../README.md)-format cost-performance harness for **[GizmoSQL](https://gizmosql.com)**,
 run on a **single AWS EC2 instance**.
 
+**Measured result:** on one `i8ge.24xlarge`, GizmoSQL takes **#1 cost-performance at 1B**
+(~4× better than ClickHouse Cloud, CostBench's own winner) and **#2 at 10B** (ahead of every cloud
+warehouse except ClickHouse Cloud). Details in [Results](#results).
+
 > **Status / disclaimer.** This directory is contributed by [GizmoData](https://gizmodata.com),
 > not by ClickHouse. CostBench is published by ClickHouse as a *reference* benchmark and
 > [does not accept external pull requests or issues](../CONTRIBUTING.md); GizmoSQL is therefore
@@ -71,11 +75,12 @@ durable system-of-record is the S3 copy, reloaded on launch.)
 
 ## What to expect (break-even analysis)
 
-The 1B/10B/100B numbers are pending real runs (see [Reproduce](#reproduce)). But we can already
-bound the result from CostBench's **own published scores** plus real EC2 prices. All three scales run
-on one **`i8ge.24xlarge`** (96-core Graviton4, single NUMA node, 60 TB local NVMe, $11.39/hr →
-**$0.003164/s**). The lowest (best) cloud `runtime × cost` score at each scale is ClickHouse Cloud
-Enterprise — the bar GizmoSQL has to clear:
+Measured **1B and 10B** results are in the [Results](#results) section below — and they tracked this
+break-even reasoning closely (100B was skipped; see Results). The reasoning, derivable up front from
+CostBench's **own published scores** plus real EC2 prices: both scales run on one **`i8ge.24xlarge`**
+(96-core Graviton4, single NUMA node, 60 TB local NVMe, $11.39/hr → **$0.003164/s**). The lowest
+(best) cloud `runtime × cost` score at each scale is ClickHouse Cloud Enterprise — the bar GizmoSQL
+has to clear:
 
 | Scale | Best cloud score (`rt × cost`) | GizmoSQL on `i8ge.24xlarge` must finish 43 queries in **under** … |
 |------:|-------------------------------:|-------------------------------------------------------------------|
@@ -212,13 +217,27 @@ The scripts are bash-3.2 compatible, so the harness also runs on macOS for devel
 
 ## Results
 
-| Scale | Instance | rt_hot (s) | cost_hot ($) | storage ($/mo) | perf/$ vs best cloud |
-|------:|----------|-----------:|-------------:|---------------:|----------------------|
-| 1B    | _i8ge.24xlarge_ | _pending_ | _pending_ | _pending_ | _pending_ |
-| 10B   | _i8ge.24xlarge_ | _pending_ | _pending_ | _pending_ | _pending_ |
-| 100B  | _i8ge.24xlarge_ | _pending_ | _pending_ | _pending_ | _pending_ |
+Measured on a single `i8ge.24xlarge` (us-east-1, on-demand $11.39/hr), best of 3 per query, OS page
+cache dropped before each query. Score = `runtime × cost` (lower is better); rank is across GizmoSQL
+plus the five CostBench cloud warehouses (all tiers) at that scale.
 
-_(Filled in as the runs complete.)_
+| Scale | rt_hot (s) | cost_hot ($) | score (rt×cost) | storage ($/mo) | cost-performance result |
+|------:|-----------:|-------------:|----------------:|---------------:|-------------------------|
+| 1B    | 34.1  | 0.108 | **3.7**  | 3.17  | **#1** — 4.2× better than ClickHouse Cloud (next best); 8–140× better than every BigQuery/Redshift/Snowflake/Databricks config |
+| 10B   | 597.3 | 1.89  | **1129** | 31.66 | **#2** — beats every cloud warehouse **except** ClickHouse Cloud (4.0× behind it; 1.7–210× ahead of all the others) |
+| 100B  | —     | —     | —        | —     | not run — a ~27 TB DuckDB file is far past one node's 768 GiB RAM (heavily out-of-core); the single-node story fades beyond ~10B |
+
+**Takeaway.** A single $11.39/hr node **wins 1B cost-performance outright** (~4× better than
+ClickHouse Cloud, the benchmark's own winner) and takes **2nd at 10B** — ahead of every cloud
+warehouse except ClickHouse. The crossover is the single-node RAM ceiling: at 1B (~270 GB) the
+working set stays fast; by 10B (~2.7 TB) DuckDB is heavily out-of-core on 768 GiB RAM, so runtime
+scales super-linearly while ClickHouse's multi-node cluster scales sub-linearly. Storage is the only
+axis where GizmoSQL trails (its durable source copy is larger than ClickHouse's compressed
+MergeTree) — a small, secondary monthly cost.
+
+Raw scoring records: [`results_1B/scoring.ndjson`](results_1B/scoring.ndjson) ·
+[`results_10B/scoring.ndjson`](results_10B/scoring.ndjson); enriched per-query costs in
+`results_<scale>/i8ge.24xlarge.json`.
 
 ## Honest caveats
 
