@@ -127,7 +127,10 @@ DNS="$(aws ec2 describe-instances --region "$REGION" --instance-ids "$IID" \
 if [ -n "$PEM" ]; then SSH_CMD="ssh -i ${PEM} ubuntu@${DNS}"
 else SSH_CMD="ssh -i <your-key>.pem ubuntu@${DNS}"; fi
 
-cat <<EOF
+# Print the connection instructions AND save them (overwrite) to a gitignored
+# file, so you can always recover the ssh / run / teardown commands later.
+DETAILS="${SCRIPT_DIR}/instance_details.txt"
+cat <<EOF | tee "$DETAILS"
 
   Instance:    ${IID}   (${INSTANCE_TYPE}, ${REGION})
   Public DNS:  ${DNS}
@@ -146,3 +149,4 @@ cat <<EOF
   Teardown when done:
     REGION=${REGION} ./teardown.sh
 EOF
+echo "(connection details saved to ${DETAILS})"

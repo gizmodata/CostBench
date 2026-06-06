@@ -9,3 +9,4 @@ run_all*.log
 # Secrets / local config — never commit these.
 .env
 *.pem
+instance_details.txt
