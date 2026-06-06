@@ -31,6 +31,11 @@ export MEMORY_LIMIT="${MEMORY_LIMIT:-}"
 # *use* the server (load/inflate) never clobber the lifecycle owner's PID file.
 PID_FILE="/tmp/gizmosql_costbench_$$.pid"
 
+# Routine server-lifecycle chatter, silenced when QUIET_SERVER=1 (e.g. run.sh's
+# per-query loop, which prints its own progress so the restarts don't look like a
+# hang). ERROR messages below are NOT routed through this — they always print.
+_srvlog() { [ "${QUIET_SERVER:-0}" = "1" ] || printf '%s\n' "$*" >&2; }
+
 # Start the server in the background and block until it accepts connections.
 start_gizmosql() {
     mkdir -p "$(dirname "${DB_FILE}")" "${DUCKDB_TEMP_DIR}" 2>/dev/null || true
@@ -50,7 +55,7 @@ start_gizmosql() {
         ${mem_flag} \
         --print-queries >> gizmosql_server.log 2>&1 &
     echo $! > "${PID_FILE}"
-    echo "Waiting for gizmosql_server on ${GIZMOSQL_HOST}:${GIZMOSQL_PORT}..." >&2
+    _srvlog "Waiting for gizmosql_server on ${GIZMOSQL_HOST}:${GIZMOSQL_PORT}..."
     # Bounded wait with a liveness check: if the server dies during startup
     # (bad DB file, port in use, missing binary) we fail fast instead of
     # spinning forever — important for unattended runs.
@@ -68,7 +73,7 @@ start_gizmosql() {
         fi
         sleep 1
     done
-    echo "gizmosql_server ready (PID $(cat "${PID_FILE}"))" >&2
+    _srvlog "gizmosql_server ready (PID $(cat "${PID_FILE}"))"
 }
 
 # Stop the server started by this shell.
@@ -76,7 +81,7 @@ stop_gizmosql() {
     if [ -f "${PID_FILE}" ]; then
         local pid; pid="$(cat "${PID_FILE}")"
         if kill -0 "$pid" 2>/dev/null; then
-            echo "Stopping gizmosql_server (PID: $pid)..." >&2
+            _srvlog "Stopping gizmosql_server (PID: $pid)..."
             kill "$pid"; wait "$pid" 2>/dev/null
         fi
         rm -f "${PID_FILE}"

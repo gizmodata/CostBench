@@ -12,6 +12,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 . ./util.sh
+export QUIET_SERVER=1   # the per-query restarts are routine; we print our own progress
 
 SYSTEM="${SYSTEM:-GizmoSQL}"
 MACHINE="${MACHINE:-unknown}"
@@ -43,11 +44,18 @@ drop_caches() {
   echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || true
 }
 
-# Emit the comma-separated "[t1, t2, t3]," rows for every query.
+# Emit the comma-separated "[t1, t2, t3]," rows for every query, with clear
+# per-query progress on stderr so the per-query server restarts read as forward
+# progress, not an endless loop.
 emit_rows() {
-  local first=1 query tmp out
+  local first=1 query tmp out qnum=0 total=0 q
+  for q in "${QUERIES[@]}"; do [ -n "${q// }" ] && total=$((total + 1)); done
+  printf '[%s] running %d queries x%d tries (server restart + cache drop per query)...\n' \
+    "$(date -u +%H:%M:%S)" "$total" "$TRIES" >&2
+
   for query in "${QUERIES[@]}"; do
     [ -z "${query// }" ] && continue
+    qnum=$((qnum + 1))
 
     drop_caches
     start_gizmosql
@@ -70,12 +78,14 @@ emit_rows() {
     )
 
     # Warn (don't fail) when a query produced no timing at all.
-    [ "${#times[@]}" -eq 0 ] && echo "WARN: query produced no 'Run Time' output" >&2
+    [ "${#times[@]}" -eq 0 ] && echo "  WARN: query ${qnum} produced no 'Run Time' output" >&2
 
     # Build exactly TRIES values, filling missing/failed runs with null.
     local arr=() i
     for (( i=0; i<TRIES; i++ )); do arr+=("${times[$i]:-null}"); done
     local joined; joined="$(printf '%s, ' "${arr[@]}")"; joined="${joined%, }"
+
+    printf '[%s] query %d/%d  ->  %ss\n' "$(date -u +%H:%M:%S)" "$qnum" "$total" "$joined" >&2
 
     [ "$first" -eq 0 ] && printf ',\n'
     printf '        [%s]' "$joined"
