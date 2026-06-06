@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Inflate the hits table to TARGET rows by repeatedly doubling it
-# (INSERT INTO hits SELECT * FROM hits), then a final LIMIT top-off to land
-# exactly on TARGET. Mirrors CostBench's clickhouse-cloud/inflate_until.sh,
-# translated to DuckDB / GizmoSQL.
+# (INSERT INTO hits SELECT * FROM hits), then a final rowid-filtered top-off to
+# land exactly on TARGET. Mirrors CostBench's clickhouse-cloud/inflate_until.sh,
+# translated to DuckDB / GizmoSQL. Prints per-step elapsed time and rows/sec.
 #
 # DuckDB MVCC means the SELECT sees the pre-insert snapshot, so each statement
 # cleanly doubles the table (it does not read its own freshly-inserted rows).
@@ -32,11 +32,24 @@ fi
 # parallel (row order in the inflated table is irrelevant to the benchmark).
 SET_PAR="SET preserve_insertion_order=false;"
 
+# Format a duration (seconds) as 45s / 3m12s / 1h04m.
+fmt_dur() {
+  local s=$1
+  if   (( s < 60 ));   then printf '%ds' "$s"
+  elif (( s < 3600 )); then printf '%dm%02ds' $((s / 60)) $((s % 60))
+  else                      printf '%dh%02dm' $((s / 3600)) $(((s % 3600) / 60))
+  fi
+}
+START_TS=$(date +%s)
+
 # Doubling phase: stop before we would overshoot TARGET.
 while (( current * 2 <= TARGET )); do
   echo "Doubling: ${current} -> $((current * 2))  (target ${TARGET})" >&2
+  prev=$current; t0=$(date +%s)
   gizmosql_client --quiet --bail --command "${SET_PAR} INSERT INTO hits SELECT * FROM hits;"
   current="$(hits_rows)"
+  dt=$(( $(date +%s) - t0 )); dt=$(( dt < 1 ? 1 : dt ))
+  echo "  +$((current - prev)) rows in $(fmt_dur "$dt") ($(( (current - prev) / dt )) rows/s) -> ${current}" >&2
 done
 
 # Final top-off to land exactly on TARGET. Use a parallel `rowid < N` predicate
@@ -48,8 +61,11 @@ done
 if (( current < TARGET )); then
   remaining=$(( TARGET - current ))
   echo "Top-off: +${remaining} -> ${TARGET}" >&2
+  prev=$current; t0=$(date +%s)
   gizmosql_client --quiet --bail --command "${SET_PAR} INSERT INTO hits SELECT * FROM hits WHERE rowid < ${remaining};"
   current="$(hits_rows)"
+  dt=$(( $(date +%s) - t0 )); dt=$(( dt < 1 ? 1 : dt ))
+  echo "  +$((current - prev)) rows in $(fmt_dur "$dt") ($(( (current - prev) / dt )) rows/s) -> ${current}" >&2
 fi
 
-echo "Final rows: ${current}" >&2
+echo "Final rows: ${current}  (inflated in $(fmt_dur $(( $(date +%s) - START_TS ))))" >&2
