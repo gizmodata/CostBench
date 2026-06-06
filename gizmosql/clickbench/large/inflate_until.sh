@@ -28,18 +28,27 @@ if (( current >= TARGET )); then
   exit 0
 fi
 
+# preserve_insertion_order=false lets DuckDB run the INSERT...SELECT fully in
+# parallel (row order in the inflated table is irrelevant to the benchmark).
+SET_PAR="SET preserve_insertion_order=false;"
+
 # Doubling phase: stop before we would overshoot TARGET.
 while (( current * 2 <= TARGET )); do
   echo "Doubling: ${current} -> $((current * 2))  (target ${TARGET})" >&2
-  gizmosql_client --quiet --bail --command "INSERT INTO hits SELECT * FROM hits;"
+  gizmosql_client --quiet --bail --command "${SET_PAR} INSERT INTO hits SELECT * FROM hits;"
   current="$(hits_rows)"
 done
 
-# Final top-off to land exactly on TARGET.
+# Final top-off to land exactly on TARGET. Use a parallel `rowid < N` predicate
+# rather than `LIMIT N`: LIMIT is a single-threaded streaming operator in DuckDB
+# (one core, very slow at this scale), whereas a rowid filter parallelizes the
+# scan + insert across all cores. The table is append-only (we never delete), so
+# rowids are contiguous 0..current-1, and remaining < current after the doubling
+# loop — so `rowid < remaining` selects exactly `remaining` rows.
 if (( current < TARGET )); then
   remaining=$(( TARGET - current ))
   echo "Top-off: +${remaining} -> ${TARGET}" >&2
-  gizmosql_client --quiet --bail --command "INSERT INTO hits SELECT * FROM hits LIMIT ${remaining};"
+  gizmosql_client --quiet --bail --command "${SET_PAR} INSERT INTO hits SELECT * FROM hits WHERE rowid < ${remaining};"
   current="$(hits_rows)"
 fi
 
