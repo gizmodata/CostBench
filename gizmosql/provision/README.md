@@ -52,8 +52,7 @@ ssh ubuntu@<public-dns>
   df -h /mnt/nvme && cat /proc/mdstat       # confirm the ~60 TB RAID-0 mounted
   # clone or scp the CostBench fork's gizmosql/ dir up first
   cd gizmosql
-  export DATA_DIR=/mnt/nvme
-  MACHINE=i8ge.24xlarge MEMORY_GIB=768 INSTALL=1 nohup ./run_all.sh > run_all.log 2>&1 &
+  nohup ./run_all.sh > run_all.log 2>&1 &   # auto-detects type/RAM + /mnt/nvme, installs deps
   tail -f run_all.log                       # ~hours at 100B; survives disconnect
 
 # When done (terminates by Name tag, or pass an instance id):

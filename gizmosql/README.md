@@ -163,27 +163,25 @@ gizmosql/
 
 ## Reproduce
 
-On a fresh Ubuntu `i8ge.24xlarge`, mount/stripe the local NVMe and point **`DATA_DIR`** at it — the
-DuckDB file, the downloaded parquet, **and** DuckDB's spill/temp dir all live there, so nothing large
-ever touches the small root EBS volume (essential at 10B/100B). `INSTALL=1` installs deps + GizmoSQL
-via the one-line installer.
+On a fresh Ubuntu `i8ge.24xlarge` with the local NVMe RAID-0'd and mounted (see
+[`provision/`](provision/README.md)), the whole sweep is one command:
 
 ```bash
-cd gizmosql/clickbench/large
-export DATA_DIR=/mnt/nvme          # absolute path to your NVMe mount
-# export MEMORY_LIMIT=90%          # optional; default is DuckDB's ~80% of RAM
-
-MACHINE=i8ge.24xlarge MEMORY_GIB=768 SCALE=1B   TARGET_ROWS=1000000000   INSTALL=1 ./benchmark.sh
-MACHINE=i8ge.24xlarge MEMORY_GIB=768 SCALE=10B  TARGET_ROWS=10000000000           ./benchmark.sh
-MACHINE=i8ge.24xlarge MEMORY_GIB=768 SCALE=100B TARGET_ROWS=100000000000          ./benchmark.sh
-#   → each writes results_<SCALE>/i8ge.24xlarge.json (raw per-query runtimes)
+cd gizmosql
+nohup ./run_all.sh > run_all.log 2>&1 &    # ~hours at 100B; survives disconnect
+tail -f run_all.log
 ```
 
-`DATA_DIR` defaults to `.`; `DUCKDB_TEMP_DIR` defaults to `$DATA_DIR/duckdb_tmp` (override if your
-spill disk differs). The DuckDB temp dir is set via a `SET temp_directory` startup command and the
-memory cap via `gizmosql_server --memory-limit`. Rough wall-clock to **build** each dataset (DuckDB
-self-insert ≈ 5–15M rows/s; `load_time` is CostBench's write-side metric and does **not** affect the
-read-side score):
+`run_all.sh` auto-detects the **instance type** (EC2 IMDS), reads **`MEMORY_GIB`** from the matching
+pricing file, defaults **`DATA_DIR`** to `/mnt/nvme` when it's mounted, **installs** GizmoSQL + deps
+if missing, then for each scale runs `benchmark.sh → enrich.sh → aggregate.sh` — writing
+`results_<SCALE>/<machine>.json` (enriched) and `results_<SCALE>/scoring.ndjson`. Override any of
+`MACHINE`, `MEMORY_GIB`, `DATA_DIR`, `SCALES` (e.g. `SCALES="1B 10B"`), `MEMORY_LIMIT`, or `INSTALL=1`
+via env. The query-ready DuckDB file, the downloaded parquet, and DuckDB's spill/temp dir all live
+under `DATA_DIR` (the NVMe mount), so nothing large touches the small root EBS volume.
+
+Rough wall-clock to **build** each dataset (DuckDB self-insert ≈ 5–15M rows/s; `load_time` is
+CostBench's write-side metric and does **not** affect the read-side score):
 
 | Scale | Data generation | DB size on NVMe |
 |------:|-----------------|-----------------|
@@ -191,18 +189,21 @@ read-side score):
 | 10B   | ~15–30 min | ~2.7 TB |
 | 100B  | ~3–6 hours | ~27 TB |
 
-Then enrich each with the `i8ge.24xlarge` pricing file and reduce to a scoring record:
+<details><summary>Running one scale by hand (instead of run_all.sh)</summary>
 
 ```bash
-cd gizmosql
-for S in 1B 10B 100B; do
-  ./enrich.sh    clickbench/large/results_${S}/i8ge.24xlarge.json \
-                 pricings/aws.i8ge.24xlarge.json \
-                 results_${S}/i8ge.24xlarge.json
-  ./aggregate.sh results_${S}/i8ge.24xlarge.json >> results_${S}/scoring.ndjson
-done
+cd gizmosql/clickbench/large
+export DATA_DIR=/mnt/nvme
+MACHINE=i8ge.24xlarge MEMORY_GIB=768 SCALE=1B TARGET_ROWS=1000000000 INSTALL=1 ./benchmark.sh
+cd .. && ./enrich.sh clickbench/large/results_1B/i8ge.24xlarge.json \
+                     pricings/aws.i8ge.24xlarge.json results_1B/i8ge.24xlarge.json
+./aggregate.sh results_1B/i8ge.24xlarge.json >> results_1B/scoring.ndjson
+```
+</details>
 
-# Chart it with CostBench's own visualizers:
+Then chart it with CostBench's own visualizers:
+
+```bash
 python ../_viz2/perf_per_dollar.py --no-title -o ppd_1B.png     < results_1B/scoring.ndjson
 python ../_viz2/render.py          --no-title -o scatter_1B.png < results_1B/scoring.ndjson
 ```

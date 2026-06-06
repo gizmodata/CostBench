@@ -142,8 +142,7 @@ cat <<EOF | tee "$DETAILS"
       df -h /mnt/nvme && cat /proc/mdstat          # confirm the ~60 TB RAID-0 mounted
       # clone/scp the CostBench fork's gizmosql/ dir up, then:
       cd gizmosql
-      export DATA_DIR=/mnt/nvme
-      MACHINE=${INSTANCE_TYPE} MEMORY_GIB=768 INSTALL=1 nohup ./run_all.sh > run_all.log 2>&1 &
+      nohup ./run_all.sh > run_all.log 2>&1 &   # auto-detects type/RAM + /mnt/nvme, installs deps
       tail -f run_all.log
 
   Teardown when done:
